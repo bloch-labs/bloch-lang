@@ -21,3 +21,6 @@ Thumbs.db
 *.dll
 *.so
 *.dylib
+
+# Generated compiler output
+/examples/**/*.qasm

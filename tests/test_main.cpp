@@ -12,6 +12,6 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-#include "bloch/cli/cli.hpp"
+#include "test_framework.hpp"
 
-int main(int argc, char** argv) { return bloch::cli::run(argc, argv, bloch::cli::Context{}); }
+int main() { return test_framework::run_all(); }
