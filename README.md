@@ -39,6 +39,11 @@ Run:
 ./build/dev/bin/bloch
 ```
 
+## Development conventions
+
+C++ development conventions are documented in the
+[Bloch C++ Style Guide](docs/cpp-style.md).
+
 ## Project history
 
 Bloch was originally developed in the
