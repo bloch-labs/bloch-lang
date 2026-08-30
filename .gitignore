@@ -1,0 +1,23 @@
+# CMake
+/build/
+CMakeUserPresets.json
+compile_commands.json
+
+# Clang tooling
+.cache/
+
+# IDEs
+.idea/
+.vscode/
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Generated binaries
+*.exe
+*.out
+*.app
+*.dll
+*.so
+*.dylib
