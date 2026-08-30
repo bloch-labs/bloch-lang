@@ -12,6 +12,24 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-#include "bloch/cli/cli.hpp"
+#pragma once
 
-int main(int argc, char** argv) { return bloch::cli::run(argc, argv, bloch::cli::Context{}); }
+#ifndef BLOCH_VERSION
+#define BLOCH_VERSION "dev"
+#endif
+#ifndef BLOCH_COMMIT_HASH
+#define BLOCH_COMMIT_HASH "unknown"
+#endif
+
+#include <string_view>
+
+namespace bloch::cli {
+
+struct Context {
+    std::string_view version = BLOCH_VERSION;
+    std::string_view commit = BLOCH_COMMIT_HASH;
+};
+
+int run(int argc, char** argv, const Context& ctx = {});
+
+}  // namespace bloch::cli
