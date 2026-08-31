@@ -14,332 +14,348 @@
 
 #include "bloch/compiler/lexer/lexer.hpp"
 
-#include <cctype>
-#include <cstdlib>
-#include <iostream>
-#include <sstream>
+#include <array>
+#include <optional>
+#include <string>
 #include <string_view>
-#include <unordered_map>
+#include <utility>
+
+#include "bloch/support/error/bloch_error.hpp"
 
 namespace bloch::compiler {
+namespace {
+
+using Keyword = std::pair<std::string_view, TokenType>;
+
+constexpr auto kKeywords = std::to_array<Keyword>({
+    // Primitive types
+    {"null", TokenType::Null},
+    {"int", TokenType::Int},
+    {"long", TokenType::Long},
+    {"float", TokenType::Float},
+    {"string", TokenType::String},
+    {"char", TokenType::Char},
+    {"qubit", TokenType::Qubit},
+    {"bit", TokenType::Bit},
+    {"boolean", TokenType::Boolean},
+
+    // Boolean literals
+    {"true", TokenType::True},
+    {"false", TokenType::False},
+
+    // Keywords
+    {"void", TokenType::Void},
+    {"function", TokenType::Function},
+    {"return", TokenType::Return},
+    {"if", TokenType::If},
+    {"else", TokenType::Else},
+    {"for", TokenType::For},
+    {"while", TokenType::While},
+    {"measure", TokenType::Measure},
+    {"final", TokenType::Final},
+    {"reset", TokenType::Reset},
+    {"default", TokenType::Default},
+
+    // Annotation values
+    {"quantum", TokenType::Quantum},
+    {"tracked", TokenType::Tracked},
+    {"shots", TokenType::Shots},
+
+    // Class system
+    {"class", TokenType::Class},
+    {"public", TokenType::Public},
+    {"private", TokenType::Private},
+    {"protected", TokenType::Protected},
+    {"static", TokenType::Static},
+    {"extends", TokenType::Extends},
+    {"abstract", TokenType::Abstract},
+    {"virtual", TokenType::Virtual},
+    {"override", TokenType::Override},
+    {"super", TokenType::Super},
+    {"this", TokenType::This},
+    {"import", TokenType::Import},
+    {"package", TokenType::Package},
+    {"new", TokenType::New},
+    {"constructor", TokenType::Constructor},
+    {"destructor", TokenType::Destructor},
+    {"destroy", TokenType::Destroy},
+
+    // Built-ins
+    {"echo", TokenType::Echo},
+});
+
+[[nodiscard]] constexpr bool is_digit(char character) noexcept {
+    return character >= '0' && character <= '9';
+}
+
+[[nodiscard]] constexpr bool is_alpha(char character) noexcept {
+    return (character >= 'a' && character <= 'z') || (character >= 'A' && character <= 'Z') ||
+           character == '_';
+}
+
+[[nodiscard]] constexpr bool is_alphanumeric(char character) noexcept {
+    return is_alpha(character) || is_digit(character);
+}
+
+[[nodiscard]] constexpr bool is_whitespace(char character) noexcept {
+    switch (character) {
+        case ' ':
+        case '\t':
+        case '\n':
+        case '\r':
+        case '\f':
+        case '\v':
+            return true;
+        default:
+            return false;
+    }
+}
+
+[[nodiscard]] constexpr std::optional<TokenType> keyword_type(std::string_view text) noexcept {
+    for (const auto& [keyword, type] : kKeywords) {
+        if (text == keyword) {
+            return type;
+        }
+    }
+    return std::nullopt;
+}
+
+}  // namespace
 
 using support::BlochError;
 using support::ErrorCategory;
-Lexer::Lexer(const std::string_view source) noexcept
-    : m_source(source), m_position(0), m_line(1), m_column(1) {}
+
+Lexer::Lexer(std::string_view source) noexcept : source_(source) {}
 
 std::vector<Token> Lexer::tokenize() {
     std::vector<Token> tokens;
-    // We repeatedly skip trivia and scan the next meaningful token
-    // until we run out of input. Always append an explicit EOF token.
-    while (m_position < m_source.size()) {
-        skipWhitespace();
-        if (m_position < m_source.size()) {
-            tokens.push_back(scanToken());
+
+    while (!is_at_end()) {
+        skip_whitespace();
+        if (is_at_end()) {
+            break;
         }
+
+        token_start_ = position_;
+        token_line_ = line_;
+        token_column_ = column_;
+        tokens.push_back(scan_token());
     }
-    tokens.push_back(makeToken(TokenType::Eof, ""));
+
+    tokens.push_back(Token{TokenType::Eof, "", line_, column_});
     return tokens;
 }
 
-char Lexer::peek() const noexcept {
-    return m_position < m_source.size() ? m_source[m_position] : '\0';
-}
+bool Lexer::is_at_end() const noexcept { return position_ >= source_.size(); }
 
-char Lexer::peekNext() const noexcept {
-    return (m_position + 1) < m_source.size() ? m_source[m_position + 1] : '\0';
+char Lexer::peek() const noexcept { return is_at_end() ? '\0' : source_[position_]; }
+
+char Lexer::peek_next() const noexcept {
+    return source_.size() - position_ > 1 ? source_[position_ + 1] : '\0';
 }
 
 char Lexer::advance() noexcept {
-    char c = m_source[m_position++];
-    m_column++;
-    return c;
+    const char character = source_[position_++];
+    if (character == '\n') {
+        ++line_;
+        column_ = 1;
+    } else {
+        ++column_;
+    }
+    return character;
 }
 
 bool Lexer::match(char expected) noexcept {
-    if (m_position >= m_source.size() || m_source[m_position] != expected) {
+    if (is_at_end() || source_[position_] != expected) {
         return false;
     }
-    m_position++;
-    m_column++;
+
+    advance();
     return true;
 }
 
-void Lexer::skipWhitespace() {
-    // Eat spaces, tabs and newlines. Treat // as a line comment.
-    while (m_position < m_source.size()) {
-        char c = peek();
-        if (std::isspace(static_cast<unsigned char>(c))) {
-            if (c == '\n') {
-                (void)advance();
-                m_line++;
-                m_column = 1;
-                continue;
-            }
-            (void)advance();
-        } else if (c == '/' && peekNext() == '/') {
-            (void)advance();
-            (void)advance();
-            skipComment();
-        } else {
-            break;
+void Lexer::skip_whitespace() noexcept {
+    while (!is_at_end()) {
+        if (is_whitespace(peek())) {
+            advance();
+            continue;
         }
+
+        if (peek() == '/' && peek_next() == '/') {
+            advance();
+            advance();
+            skip_comment();
+            continue;
+        }
+
+        break;
     }
 }
 
-void Lexer::skipComment() {
-    // Consume the rest of the current line.
-    while (m_position < m_source.size() && m_source[m_position] != '\n') {
-        (void)advance();
+void Lexer::skip_comment() noexcept {
+    while (!is_at_end() && peek() != '\n') {
+        advance();
     }
 }
 
-void Lexer::reportError(const std::string& msg) {
-    throw BlochError(ErrorCategory::Lexical, m_line, m_column, msg);
+void Lexer::report_error(std::string_view message) const {
+    throw BlochError(ErrorCategory::Lexical, line_, column_, std::string(message));
 }
 
-Token Lexer::makeToken(TokenType type, const std::string& value) {
-    // Column is adjusted so error spans point to token start.
-    return Token{type, value, m_line, m_column - static_cast<int>(value.length())};
+Token Lexer::make_token(TokenType type) const {
+    const auto lexeme = source_.substr(token_start_, position_ - token_start_);
+    return Token{type, std::string(lexeme), token_line_, token_column_};
 }
 
-Token Lexer::scanToken() {
-    char c = advance();
+Token Lexer::scan_token() {
+    const char character = advance();
 
-    // Fast paths for common leading characters
-    if (std::isdigit(static_cast<unsigned char>(c)))
-        return scanNumber();
-    if (std::isalpha(static_cast<unsigned char>(c)) || c == '_')
-        return scanIdentifierOrKeyword();
+    if (is_digit(character)) {
+        return scan_number();
+    }
+    if (is_alpha(character)) {
+        return scan_identifier_or_keyword();
+    }
 
-    switch (c) {
+    switch (character) {
         case '=':
-            return match('=') ? makeToken(TokenType::EqualEqual, "==")
-                              : makeToken(TokenType::Equals, "=");
+            return make_token(match('=') ? TokenType::EqualEqual : TokenType::Equals);
         case '!':
-            return match('=') ? makeToken(TokenType::BangEqual, "!=")
-                              : makeToken(TokenType::Bang, "!");
+            return make_token(match('=') ? TokenType::BangEqual : TokenType::Bang);
         case '+':
-            return match('+') ? makeToken(TokenType::PlusPlus, "++")
-                              : makeToken(TokenType::Plus, "+");
+            return make_token(match('+') ? TokenType::PlusPlus : TokenType::Plus);
         case '&':
-            return match('&') ? makeToken(TokenType::AmpersandAmpersand, "&&")
-                              : makeToken(TokenType::Ampersand, "&");
+            return make_token(match('&') ? TokenType::AmpersandAmpersand : TokenType::Ampersand);
         case '|':
-            return match('|') ? makeToken(TokenType::PipePipe, "||")
-                              : makeToken(TokenType::Pipe, "|");
+            return make_token(match('|') ? TokenType::PipePipe : TokenType::Pipe);
         case '^':
-            return makeToken(TokenType::Caret, "^");
+            return make_token(TokenType::Caret);
         case '~':
-            return makeToken(TokenType::Tilde, "~");
+            return make_token(TokenType::Tilde);
         case '-':
-            if (match('>'))
-                return makeToken(TokenType::Arrow, "->");
-            return match('-') ? makeToken(TokenType::MinusMinus, "--")
-                              : makeToken(TokenType::Minus, "-");
+            if (match('>')) {
+                return make_token(TokenType::Arrow);
+            }
+            return make_token(match('-') ? TokenType::MinusMinus : TokenType::Minus);
         case '*':
-            return makeToken(TokenType::Star, "*");
+            return make_token(TokenType::Star);
         case '/':
-            return makeToken(TokenType::Slash, "/");
+            return make_token(TokenType::Slash);
         case '%':
-            return makeToken(TokenType::Percent, "%");
+            return make_token(TokenType::Percent);
         case '>':
-            return match('=') ? makeToken(TokenType::GreaterEqual, ">=")
-                              : makeToken(TokenType::Greater, ">");
+            return make_token(match('=') ? TokenType::GreaterEqual : TokenType::Greater);
         case '<':
-            return match('=') ? makeToken(TokenType::LessEqual, "<=")
-                              : makeToken(TokenType::Less, "<");
+            return make_token(match('=') ? TokenType::LessEqual : TokenType::Less);
         case '?':
-            return makeToken(TokenType::Question, "?");
+            return make_token(TokenType::Question);
         case ':':
-            return makeToken(TokenType::Colon, ":");
+            return make_token(TokenType::Colon);
         case '.':
-            return makeToken(TokenType::Dot, ".");
+            return make_token(TokenType::Dot);
         case ';':
-            return makeToken(TokenType::Semicolon, ";");
+            return make_token(TokenType::Semicolon);
         case ',':
-            return makeToken(TokenType::Comma, ",");
+            return make_token(TokenType::Comma);
         case '@':
-            return makeToken(TokenType::At, "@");
+            return make_token(TokenType::At);
         case '"':
-            return scanString();
+            return scan_string();
         case '\'':
-            return scanChar();
+            return scan_char();
         case '(':
-            return makeToken(TokenType::LParen, "(");
+            return make_token(TokenType::LParen);
         case ')':
-            return makeToken(TokenType::RParen, ")");
+            return make_token(TokenType::RParen);
         case '{':
-            return makeToken(TokenType::LBrace, "{");
+            return make_token(TokenType::LBrace);
         case '}':
-            return makeToken(TokenType::RBrace, "}");
+            return make_token(TokenType::RBrace);
         case '[':
-            return makeToken(TokenType::LBracket, "[");
+            return make_token(TokenType::LBracket);
         case ']':
-            return makeToken(TokenType::RBracket, "]");
+            return make_token(TokenType::RBracket);
         default:
-            return makeToken(TokenType::Unknown, std::string(1, c));
+            return make_token(TokenType::Unknown);
     }
 }
 
-Token Lexer::scanNumber() {
-    // Integers by default; a trailing '.<digits>f' upgrades to float,
-    // and a trailing 'b' turns a 0/1 into a bit literal.
-    size_t start = m_position - 1;
-    while (std::isdigit(static_cast<unsigned char>(peek())))
-        (void)advance();
+Token Lexer::scan_number() {
+    while (is_digit(peek())) {
+        advance();
+    }
 
     if (peek() == '.') {
-        (void)advance();
-        while (std::isdigit(static_cast<unsigned char>(peek())))
-            (void)advance();
-        if (peek() == 'f') {
-            (void)advance();
-            return makeToken(TokenType::FloatLiteral,
-                             std::string(m_source.substr(start, m_position - start)));
-        } else {
-            reportError("float literals must end with 'f'");
-            return makeToken(TokenType::Unknown,
-                             std::string(m_source.substr(start, m_position - start)));
+        advance();
+        while (is_digit(peek())) {
+            advance();
         }
+
+        if (peek() == 'f') {
+            advance();
+            return make_token(TokenType::FloatLiteral);
+        }
+
+        report_error("float literals must end with 'f'");
     }
 
-    // Support integer part followed directly by 'f' (e.g., 3f)
     if (peek() == 'f') {
-        (void)advance();
-        return makeToken(TokenType::FloatLiteral,
-                         std::string(m_source.substr(start, m_position - start)));
+        advance();
+        return make_token(TokenType::FloatLiteral);
     }
 
     if (peek() == 'L') {
-        (void)advance();
-        return makeToken(TokenType::LongLiteral,
-                         std::string(m_source.substr(start, m_position - start)));
+        advance();
+        return make_token(TokenType::LongLiteral);
     }
 
     if (peek() == 'b') {
-        std::string_view digits = m_source.substr(start, m_position - start);
+        const auto digits = source_.substr(token_start_, position_ - token_start_);
         if (digits != "0" && digits != "1") {
-            reportError("bit literals must be 0b or 1b");
-            (void)advance();
-            return makeToken(TokenType::Unknown,
-                             std::string(m_source.substr(start, m_position - start)));
+            report_error("bit literals must be 0b or 1b");
         }
-        (void)advance();
-        return makeToken(TokenType::BitLiteral,
-                         std::string(m_source.substr(start, m_position - start)));
+
+        advance();
+        return make_token(TokenType::BitLiteral);
     }
 
-    return makeToken(TokenType::IntegerLiteral,
-                     std::string(m_source.substr(start, m_position - start)));
+    return make_token(TokenType::IntegerLiteral);
 }
 
-Token Lexer::scanIdentifierOrKeyword() {
-    // Identifiers are [A-Za-z_][A-Za-z0-9_]*. Some of them are keywords.
-    size_t start = m_position - 1;
-    while (std::isalnum(static_cast<unsigned char>(peek())) || peek() == '_')
-        (void)advance();
-
-    std::string_view text = m_source.substr(start, m_position - start);
-
-    static const std::unordered_map<std::string_view, TokenType> keywords = {
-
-        // Primitives
-        {"null", TokenType::Null},
-        {"int", TokenType::Int},
-        {"long", TokenType::Long},
-        {"float", TokenType::Float},
-        {"string", TokenType::String},
-        {"char", TokenType::Char},
-        {"qubit", TokenType::Qubit},
-        {"bit", TokenType::Bit},
-        {"boolean", TokenType::Boolean},
-
-        // Boolean literals (treated as keywords for convenience)
-        {"true", TokenType::True},
-        {"false", TokenType::False},
-
-        // Keywords
-        {"void", TokenType::Void},
-        {"function", TokenType::Function},
-        {"return", TokenType::Return},
-        {"if", TokenType::If},
-        {"else", TokenType::Else},
-        {"for", TokenType::For},
-        {"while", TokenType::While},
-        {"measure", TokenType::Measure},
-        {"final", TokenType::Final},
-        {"reset", TokenType::Reset},
-        {"default", TokenType::Default},
-
-        // Annotation Values
-        {"quantum", TokenType::Quantum},
-        {"tracked", TokenType::Tracked},
-        {"shots", TokenType::Shots},
-
-        // Class System
-        {"class", TokenType::Class},
-        {"public", TokenType::Public},
-        {"private", TokenType::Private},
-        {"protected", TokenType::Protected},
-        {"static", TokenType::Static},
-        {"extends", TokenType::Extends},
-        {"abstract", TokenType::Abstract},
-        {"virtual", TokenType::Virtual},
-        {"override", TokenType::Override},
-        {"super", TokenType::Super},
-        {"this", TokenType::This},
-        {"import", TokenType::Import},
-        {"package", TokenType::Package},
-        {"new", TokenType::New},
-        {"constructor", TokenType::Constructor},
-        {"destructor", TokenType::Destructor},
-        {"destroy", TokenType::Destroy},
-
-        // Built ins
-        {"echo", TokenType::Echo}};
-
-    auto it = keywords.find(text);
-    if (it != keywords.end()) {
-        return makeToken(it->second, std::string(text));
+Token Lexer::scan_identifier_or_keyword() {
+    while (is_alphanumeric(peek())) {
+        advance();
     }
 
-    return makeToken(TokenType::Identifier, std::string(text));
+    const auto identifier = source_.substr(token_start_, position_ - token_start_);
+    const auto type = keyword_type(identifier).value_or(TokenType::Identifier);
+    return make_token(type);
 }
 
-Token Lexer::scanString() {
-    // Strings are double-quoted and may span lines; we do not process escapes yet.
-    size_t start = m_position;
-    while (m_position < m_source.size() && peek() != '"') {
-        if (peek() == '\n')
-            m_line++;
-        (void)advance();
+Token Lexer::scan_string() {
+    while (!is_at_end() && peek() != '"') {
+        advance();
     }
 
-    if (peek() == '"') {
-        (void)advance();
-        return makeToken(TokenType::StringLiteral,
-                         std::string(m_source.substr(start - 1, m_position - start + 1)));
+    if (is_at_end()) {
+        report_error("unterminated string literal");
     }
 
-    reportError("unterminated string literal");
-    return makeToken(TokenType::Unknown,
-                     std::string(m_source.substr(start - 1, m_position - start + 1)));
+    advance();
+    return make_token(TokenType::StringLiteral);
 }
 
-Token Lexer::scanChar() {
-    // Char literals are simple: '\'' X '\'' with no escaping support for now.
-    size_t start = m_position;
-    if (m_position < m_source.size())
-        (void)advance();
+Token Lexer::scan_char() {
+    if (!is_at_end()) {
+        advance();
+    }
 
     if (peek() == '\'') {
-        (void)advance();
-        return makeToken(TokenType::CharLiteral, std::string(m_source.substr(start - 1, 3)));
+        advance();
+        return make_token(TokenType::CharLiteral);
     }
 
-    reportError("unterminated char literal");
-    return makeToken(TokenType::Unknown,
-                     std::string(m_source.substr(start - 1, m_position - start + 1)));
+    report_error("unterminated char literal");
 }
+
 }  // namespace bloch::compiler
